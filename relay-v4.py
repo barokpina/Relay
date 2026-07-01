@@ -25,20 +25,19 @@ import winreg
 import math
 
 # ============================================================
-# FIX #1 — Resolve DLL path (works both .py and frozen .exe)
-# Saat --onefile: PyInstaller ekstrak ke sys._MEIPASS (temp folder)
-# DLL dicari di _MEIPASS dulu, fallback ke folder exe/script
+# Resolve DLL path — support .py, onefile, dan onedir PyInstaller
+# onefile : file diekstrak ke sys._MEIPASS (folder temp)
+# onedir  : semua file ada di folder yang sama dengan .exe (sys.executable)
 # ============================================================
 if getattr(sys, "frozen", False):
-    # Folder sementara tempat PyInstaller ekstrak file bundle
-    BUNDLE_DIR = sys._MEIPASS
-    # Folder tempat .exe berada (untuk DB, log, dll file persisten)
+    # onefile → ada _MEIPASS; onedir → tidak ada, pakai folder exe
+    BUNDLE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
     BASE_DIR   = os.path.dirname(sys.executable)
 else:
     BUNDLE_DIR = os.path.dirname(os.path.abspath(__file__))
     BASE_DIR   = BUNDLE_DIR
 
-# DLL diambil dari bundle (sudah ter-compile di dalam exe)
+# DLL ada di folder bundle (di samping exe untuk onedir, di _MEIPASS untuk onefile)
 dll_path = os.path.join(BUNDLE_DIR, "usb_relay_device.dll")
 
 # ============================================================
@@ -69,8 +68,12 @@ else:
 # AUTO STARTUP — Registry helpers
 # ============================================================
 APP_NAME = "URCTouchRelay"
-APP_PATH = os.path.abspath(sys.argv[0])
-REG_KEY  = r"Software\Microsoft\Windows\CurrentVersion\Run"
+# Auto startup daftarkan batch wrapper supaya restart otomatis jalan
+# Kalau relay-start.bat tidak ada (misal jalan manual), fallback ke exe/py
+_exe_dir  = BASE_DIR
+_bat_path = os.path.join(_exe_dir, "relay-start.bat")
+APP_PATH  = _bat_path if os.path.exists(_bat_path) else os.path.abspath(sys.argv[0])
+REG_KEY   = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 def is_startup_registered():
     try:
@@ -314,24 +317,11 @@ def _save_camera_retry_count(val: int):
     threading.Thread(target=db_save_setting, args=("camera_retry_count", str(val)), daemon=True).start()
 
 def restart_application():
-    """Tutup aplikasi ini SEPENUHNYA (proses benar-benar exit) lalu buka
-    proses baru secara otomatis — bukan hanya toggle relay."""
-    log_message("🔄 Merestart aplikasi sepenuhnya...")
-    print("[Restart] Membuka proses baru sebelum menutup proses ini...")
-    try:
-        if getattr(sys, "frozen", False):
-            # Versi .exe hasil PyInstaller — jalankan ulang exe yang sama
-            subprocess.Popen([sys.executable], close_fds=True)
-        else:
-            # Versi .py — jalankan ulang dengan interpreter python yang sama
-            subprocess.Popen([sys.executable, os.path.abspath(__file__)], close_fds=True)
-    except Exception as e:
-        print(f"[Restart] Gagal membuka proses baru: {e}")
-        log_message(f"❌ Gagal merestart aplikasi: {e}")
-        return
-
-    # Jadwalkan penutupan total di main thread (root.destroy + matikan relay)
-    root.after(100, shutdown_relay_and_exit)
+    """Tutup aplikasi ini — batch wrapper (relay-start.bat) akan otomatis
+    membuka ulang setelah 3 detik. Tidak perlu subprocess.Popen sama sekali."""
+    log_message("🔄 Menutup aplikasi untuk restart otomatis via batch wrapper...")
+    print("[Restart] Exit — relay-start.bat akan buka ulang dalam 3 detik.")
+    root.after(500, shutdown_relay_and_exit)
 
 def verify_camera_after_relay_on():
     """Tunggu beberapa detik setelah relay ON, lalu cek apakah kamera
